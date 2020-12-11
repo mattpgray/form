@@ -1,6 +1,7 @@
 package form
 
 import (
+	"log"
 	"net/url"
 	"testing"
 )
@@ -14,10 +15,11 @@ func TestParse(t *testing.T) {
 
 	vals := url.Values{
 		"B": []string{"B value"},
-		"C": []string{"C value"},
 		"D": []string{"D value"},
 	}
 	if err := Parse(vals, &testStruct); err != nil {
 		t.Errorf("Parse: %q", err)
 	} // if
+
+	log.Printf("Result: %+v", testStruct)
 }
