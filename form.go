@@ -31,7 +31,7 @@ func (p *Parser) Parse(vals url.Values, v interface{}) error {
 
 	if p.CaseInsensitive {
 		// Change all struct tags to lower case for fast searching
-		entriesLower := make(map[string]interface{}, len(entries))
+		entriesLower := make(map[string]*Field, len(entries))
 		for k, entry := range entries {
 			kLower := strings.ToLower(k)
 			if _, ok := entriesLower[kLower]; ok {
@@ -61,7 +61,7 @@ func (p *Parser) Parse(vals url.Values, v interface{}) error {
 		vals = valsLower
 	} else if !p.AllowExtra {
 		// Check that we expected every value before beginning to parse values.
-		// This helpes avoid partially populating the result.
+		// This helps avoid partially populating the result.
 		for k, e := range vals {
 			if _, ok := entries[k]; !ok {
 				return &UnexpectedFieldError{Field: k, Vals: e}
@@ -69,51 +69,160 @@ func (p *Parser) Parse(vals url.Values, v interface{}) error {
 		} // for
 	}
 
-	for k, e := range vals {
+	return setMap(vals, entries)
+}
+
+func setMap(vals url.Values, entries map[string]*Field) error {
+	for k, val := range vals {
 		// TODO: Preserve inital type and some tag options
-		entry, ok := entries[k]
+		field, ok := entries[k]
 		if !ok {
 			// this is guarded and should never hapen
 			panic("duplicate field found after checking: " + k)
 		}
 
-		if fieldParser, ok := entry.(FieldParser); ok {
-			if err := fieldParser.ParseField(e); err != nil {
-				return err
+		// If nil we can now set the field.
+		if field.Value.Kind() == reflect.Ptr && field.Value.IsNil() && field.Value.CanSet() {
+			if field.Value.IsNil() && field.Value.CanSet() {
+				field.Value.Set(reflect.New(field.Value.Type().Elem()))
+			} // if
+		} // if
+
+		if fieldParser, ok := getFieldParser(field.Value); ok {
+			if err := fieldParser.ParseField(val); err != nil {
+				return &FieldParseError{Field: field.Name, Err: err}
 			} // if
 
 			continue
 		} // if
 
-		// Common options
+		// We have a few kinds
+		v := baseElem(field.Value)
+		kind := v.Kind()
+		if !v.CanSet() {
+			continue
+		}
 
-		switch entryVal := entry.(type) {
-		case *string:
-			if len(e) > 0 {
-				*entryVal = e[0]
+		switch kind {
+		case reflect.Bool:
+			b, err := parseBool(val)
+			if err != nil {
+				return &FieldParseError{Field: field.Name, Err: err}
+			} // if
+
+			v.SetBool(b)
+
+		case reflect.Int,
+			reflect.Int8,
+			reflect.Int16,
+			reflect.Int32,
+			reflect.Int64:
+			i, err := parseInt(val)
+			if err != nil {
+				return &FieldParseError{Field: field.Name, Err: err}
+			} // if
+
+			v.SetInt(i)
+
+		case reflect.Uint,
+			reflect.Uint8,
+			reflect.Uint16,
+			reflect.Uint32,
+			reflect.Uint64:
+			i, err := parseUint(val)
+			if err != nil {
+				return &FieldParseError{Field: field.Name, Err: err}
+			} // if
+
+			v.SetUint(i)
+
+		case reflect.Slice:
+			if v.Elem().Kind() == reflect.String {
+				set := reflect.ValueOf(val)
+				if set.Type() != v.Type() {
+					set = set.Convert(v.Type())
+				} // if
+
+				v.Set(set)
+			} // if
+
+		case reflect.String:
+			s, err := parseString(val)
+			if err != nil {
+				return &FieldParseError{Field: field.Name, Err: err}
 			}
 
-		case *int:
-			if len(e) > 0 {
-				if i, err := strconv.Atoi(e[0]); err != nil {
-					return err
-				} else {
-					*entryVal = i
-				}
-			}
+			v.SetString(s)
 
 		default:
-			return &FieldTypeError{Field: k, Type: reflect.TypeOf(e)}
+			return &FieldTypeError{Field: field.Name, Type: field.Value.Type()}
 		}
 	} // for
 
 	return nil
 }
 
-func buildMap(v interface{}) (map[string]interface{}, error) {
+type Field struct {
+	Value reflect.Value
+	Name  string
+}
+
+func getFieldParser(v reflect.Value) (FieldParser, bool) {
+	if fieldParser, ok := getFieldParserOnce(v); ok {
+		return fieldParser, true
+	}
+
+	if v.Kind() == reflect.Ptr && !v.IsNil() {
+		// Get the elem
+		// Does this even work?
+		if fieldParser, ok := getFieldParserOnce(v.Elem()); ok {
+			return fieldParser, true
+		}
+	}
+
+	// Check the pointer in all cases.
+	if v.CanAddr() {
+		if fieldParser, ok := getFieldParserOnce(v.Addr()); ok {
+			return fieldParser, true
+		}
+	}
+
+	return nil, false
+} // getFieldParser
+
+func getFieldParserOnce(v reflect.Value) (FieldParser, bool) {
+	if v.CanInterface() {
+		if fieldParser, ok := v.Interface().(FieldParser); ok {
+			return fieldParser, true
+		}
+	} // if
+
+	return nil, false
+} // getFieldParserOnce
+
+func baseElem(v reflect.Value) reflect.Value {
+	// TODO guard against infinite recursion ?
+	for {
+		// Check the pointer in all cases.
+		if v.Kind() != reflect.Ptr {
+			return v
+		}
+
+		v = v.Elem()
+	}
+}
+
+func buildMap(v interface{}) (map[string]*Field, error) {
 	if entries, ok := v.(map[string]interface{}); ok {
+		e := make(map[string]*Field, len(entries))
+		for k, v := range entries {
+			e[k] = &Field{
+				Value: reflect.ValueOf(v),
+				Name:  k,
+			}
+		}
 		// TODO: Check that each entry can be set.
-		return entries, nil
+		return e, nil
 	} // if
 
 	// Must be a pointer
@@ -131,7 +240,7 @@ func buildMap(v interface{}) (map[string]interface{}, error) {
 	eleType := ele.Type()
 
 	nFields := ele.NumField()
-	entries := make(map[string]interface{}, nFields)
+	entries := make(map[string]*Field, nFields)
 	for i := 0; i < nFields; i++ {
 		entry := ele.Field(i)
 		entryType := eleType.Field(i)
@@ -140,40 +249,29 @@ func buildMap(v interface{}) (map[string]interface{}, error) {
 		// TODO: Handle anonymous structs.
 		if isUnexported {
 			continue
-		} // if
+		}
 
 		name := entryType.Name
 		if tag := entryType.Tag.Get("form"); tag != "" {
 			name = tag
-		} // if
+		}
 
 		if _, ok := entries[name]; ok {
 			return nil, &DuplicateFieldError{Field: name}
-		} // if
+		}
 
-		if entry.Kind() == reflect.Ptr {
-			// If it is a nil pointer then populate it
-			if entry.IsNil() {
-				if entry.CanSet() {
-					continue
-				} // if
-
-				entry.Set(reflect.New(entry.Type().Elem()))
-			} // if
-		} else {
-			// Get the address
-			if !entry.CanAddr() {
-				continue
-			} // if
-
-			entry = entry.Addr()
-		} // else
+		if !entry.CanSet() {
+			continue
+		}
 
 		if !entry.CanInterface() {
 			continue
-		} // if
+		}
 
-		entries[name] = entry.Interface()
+		entries[name] = &Field{
+			Value: entry,
+			Name:  name,
+		}
 	} // for
 
 	return entries, nil
@@ -234,6 +332,89 @@ func (e *UnexpectedFieldError) Error() string {
 	return buildErrorMessage("Parse", msg)
 }
 
+type UnexpectedValueError struct {
+	Value string
+}
+
+func (e *UnexpectedValueError) Error() string {
+	return buildErrorMessage("Parse", fmt.Sprintf("unexpected value %v", e.Value))
+}
+
+type UnexpectedValuesError struct {
+	Values []string
+}
+
+func (e *UnexpectedValuesError) Error() string {
+	return buildErrorMessage("Parse", fmt.Sprintf("unexpected values %v", e.Values))
+}
+
+type FieldParseError struct {
+	Field string
+	Err   error
+}
+
+func (e *FieldParseError) Error() string {
+	return buildErrorMessage("Parse", fmt.Sprintf("error parsing field %q: %q", e.Field, e.Err))
+}
+
+func (e *FieldParseError) Unwrap() error {
+	return e.Err
+}
+
 func buildErrorMessage(fn, msg string) string {
 	return "go-form:" + fn + ": " + msg
+}
+
+func parseBool(vals []string) (bool, error) {
+	s, err := parseString(vals)
+	if err != nil {
+		return false, err
+	} // if
+
+	switch s {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	}
+
+	return false, &UnexpectedValueError{s}
+}
+
+func parseInt(vals []string) (int64, error) {
+	s, err := parseString(vals)
+	if err != nil {
+		return 0, err
+	} // if
+
+	i, err := strconv.ParseInt(s, 10, 0)
+	if err != nil {
+		return 0, &UnexpectedValueError{s}
+	} // if
+
+	return i, nil
+}
+
+func parseUint(vals []string) (uint64, error) {
+	s, err := parseString(vals)
+	if err != nil {
+		return 0, err
+	} // if
+
+	u, err := strconv.ParseUint(s, 10, 0)
+	if err != nil {
+		return 0, &UnexpectedValueError{s}
+	} // if
+
+	return u, nil
+}
+
+func parseString(vals []string) (string, error) {
+	if len(vals) == 1 {
+		return vals[0], nil
+	}
+
+	// We strictly only allow one value when parsing a string.
+	// Callers can use []string if they care
+	return "", &UnexpectedValuesError{vals}
 }
