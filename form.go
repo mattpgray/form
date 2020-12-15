@@ -108,7 +108,7 @@ func setMap(vals url.Values, entries map[string]*Field) error {
 			b, err := parseBool(val)
 			if err != nil {
 				return &FieldParseError{Field: field.Name, Err: err}
-			} // if
+			}
 
 			v.SetBool(b)
 
@@ -120,7 +120,7 @@ func setMap(vals url.Values, entries map[string]*Field) error {
 			i, err := parseInt(val)
 			if err != nil {
 				return &FieldParseError{Field: field.Name, Err: err}
-			} // if
+			}
 
 			v.SetInt(i)
 
@@ -132,19 +132,21 @@ func setMap(vals url.Values, entries map[string]*Field) error {
 			i, err := parseUint(val)
 			if err != nil {
 				return &FieldParseError{Field: field.Name, Err: err}
-			} // if
+			}
 
 			v.SetUint(i)
 
 		case reflect.Slice:
-			if v.Elem().Kind() == reflect.String {
-				set := reflect.ValueOf(val)
-				if set.Type() != v.Type() {
-					set = set.Convert(v.Type())
-				} // if
+			if v.Elem().Kind() != reflect.String {
+				return &FieldTypeError{Field: field.Name, Type: field.Value.Type()}
+			}
 
-				v.Set(set)
-			} // if
+			set := reflect.ValueOf(val)
+			if set.Type() != v.Type() {
+				set = set.Convert(v.Type())
+			}
+
+			v.Set(set)
 
 		case reflect.String:
 			s, err := parseString(val)
