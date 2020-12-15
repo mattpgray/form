@@ -3,6 +3,7 @@ package form
 import (
 	"errors"
 	"net/url"
+	"reflect"
 	"testing"
 )
 
@@ -42,6 +43,69 @@ func TestParseString(t *testing.T) {
 		}
 	}
 }
+
+func TestParseStringSlice(t *testing.T) {
+	type GlobalAlias []string
+	type InnerAlias string
+	testStruct := struct {
+		A []string
+		B GlobalAlias
+		C []InnerAlias
+	}{}
+
+	as := []string{"A value 1", "A Value 2"}
+	bs := []string{"B value 1", "B Value 2"}
+	cs := []string{"C value 1", "C Value 2"}
+
+	vals := url.Values{
+		"A": as,
+		"B": bs,
+		"C": cs,
+	}
+	if err := Parse(vals, &testStruct); err != nil {
+		t.Fatalf("Parse: %q", err)
+	} // if
+
+	if !reflect.DeepEqual(testStruct.A, as) {
+		t.Errorf("Unexpected value in A. Expected %v found %v", as, testStruct.A)
+	}
+	if !reflect.DeepEqual([]string(testStruct.B), bs) {
+		t.Errorf("Unexpected value in B. Expected %v found %v", bs, testStruct.B)
+	}
+
+	var cRes []string
+	if testStruct.C != nil {
+		cRes = make([]string, len(testStruct.C))
+
+		for i := range testStruct.C {
+			cRes[i] = string(testStruct.C[i])
+		}
+	}
+	if !reflect.DeepEqual(cRes, cs) {
+		t.Errorf("Unexpected value in B. Expected %v found %v", cs, testStruct.C)
+	}
+
+}
+
+func stringSliceEqual(a, b []string) bool {
+	if a == nil && b == nil {
+		return true
+	} else if a == nil || b == nil {
+		return false
+	}
+
+	if len(a) != len(b) {
+		return false
+	} // if
+
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+
+	return true
+} // stringsEqual
 
 func TestParseInt(t *testing.T) {
 	type Alias string

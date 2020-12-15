@@ -137,12 +137,22 @@ func setMap(vals url.Values, entries map[string]*Field) error {
 			v.SetUint(i)
 
 		case reflect.Slice:
-			if v.Elem().Kind() != reflect.String {
+			elem := v.Type().Elem()
+			if elem.Kind() != reflect.String {
 				return &FieldTypeError{Field: field.Name, Type: field.Value.Type()}
 			}
 
 			set := reflect.ValueOf(val)
-			if set.Type() != v.Type() {
+			if elem != set.Type().Elem() {
+				// The inner string type has been aliased. We need to convert each element
+				set = reflect.MakeSlice(v.Type(), len(val), len(val))
+
+				for i := range val {
+					set.Index(i).SetString(val[i])
+				}
+
+			} else if set.Type() != v.Type() {
+				// The  []string type has been aliased. We need to convert the entire object
 				set = set.Convert(v.Type())
 			}
 
