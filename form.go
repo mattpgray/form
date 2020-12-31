@@ -8,168 +8,208 @@ import (
 	"strings"
 )
 
+// FieldParser allows callers to implement custom form parsing for a particular field
 type FieldParser interface {
-	ParseField(vals []string) error
+	ParseField(key string, vals []string) error
 }
 
 var defaultParser = &Parser{}
 
+// Parse calls Parser{}.Parse()
 func Parse(vals url.Values, v interface{}) error {
 	return defaultParser.Parse(vals, v)
 }
 
+// Parser performs the parsing of the form values. It is used to specify options that
+// alter the method of parsing
 type Parser struct {
 	CaseInsensitive bool
 	AllowExtra      bool
+	// Recurse allows sub structs to be populated. Leave nil if you do not want sub keys to be parsed.
+	// If Recurse is nil and a sub struct/map is found then it is ignored.
+	Recurse RecursionFunc
 }
 
-func (p *Parser) Parse(vals url.Values, v interface{}) error {
-	entries, err := buildMap(v)
+// Parse parses the form values into the supplied variable based on the parsers options.
+// The supplied value must be either a non-nil pointer to a struct or a map.
+func (p *Parser) Parse(urlVals url.Values, v interface{}) error {
+	entries, err := buildMap(v, p.CaseInsensitive, p.Recurse != nil)
 	if err != nil {
 		return err
-	} // if
-
-	if p.CaseInsensitive {
-		// Change all struct tags to lower case for fast searching
-		entriesLower := make(map[string]*Field, len(entries))
-		for k, entry := range entries {
-			kLower := strings.ToLower(k)
-			if _, ok := entriesLower[kLower]; ok {
-				return &DuplicateFieldError{Field: kLower}
-			} // if
-
-			entriesLower[kLower] = entry
-		} // for
-
-		entries = entriesLower
-
-		// Also flatten vals from multiple cases
-		valsLower := url.Values{}
-		for k, e := range vals {
-			kLower := strings.ToLower(k)
-
-			if !p.AllowExtra {
-				// Check here to preserve the initial case of the incorrect field
-				if _, ok := entries[kLower]; !ok {
-					return &UnexpectedFieldError{Field: k, Vals: e}
-				}
-			}
-
-			valsLower[kLower] = append(valsLower[kLower], e...)
-		} // for
-
-		vals = valsLower
-	} else if !p.AllowExtra {
-		// Check that we expected every value before beginning to parse values.
-		// This helps avoid partially populating the result.
-		for k, e := range vals {
-			if _, ok := entries[k]; !ok {
-				return &UnexpectedFieldError{Field: k, Vals: e}
-			}
-		} // for
 	}
 
+	vals := buildVals(urlVals, p.CaseInsensitive, p.Recurse)
 	return setMap(vals, entries)
 }
 
-func setMap(vals url.Values, entries map[string]*Field) error {
-	for k, val := range vals {
-		// TODO: Preserve inital type and some tag options
-		field, ok := entries[k]
-		if !ok {
-			// this is guarded and should never hapen
-			panic("duplicate field found after checking: " + k)
+func buildVals(vals url.Values, toLower bool, recurse RecursionFunc) map[string]*formLayer {
+	flatVals := make(map[string]*formLayer)
+	for k, e := range vals {
+		key := k
+		if toLower {
+			key = strings.ToLower(k)
 		}
 
-		// If nil we can now set the field.
-		if field.Value.Kind() == reflect.Ptr && field.Value.IsNil() && field.Value.CanSet() {
-			if field.Value.IsNil() && field.Value.CanSet() {
-				field.Value.Set(reflect.New(field.Value.Type().Elem()))
-			} // if
-		} // if
-
-		if fieldParser, ok := getFieldParser(field.Value); ok {
-			if err := fieldParser.ParseField(val); err != nil {
-				return &FieldParseError{Field: field.Name, Err: err}
-			} // if
-
-			continue
-		} // if
-
-		// We have a few kinds
-		v := baseElem(field.Value)
-		kind := v.Kind()
-		if !v.CanSet() {
-			continue
-		}
-
-		switch kind {
-		case reflect.Bool:
-			b, err := parseBool(val)
-			if err != nil {
-				return &FieldParseError{Field: field.Name, Err: err}
-			}
-
-			v.SetBool(b)
-
-		case reflect.Int,
-			reflect.Int8,
-			reflect.Int16,
-			reflect.Int32,
-			reflect.Int64:
-			i, err := parseInt(val)
-			if err != nil {
-				return &FieldParseError{Field: field.Name, Err: err}
-			}
-
-			v.SetInt(i)
-
-		case reflect.Uint,
-			reflect.Uint8,
-			reflect.Uint16,
-			reflect.Uint32,
-			reflect.Uint64:
-			i, err := parseUint(val)
-			if err != nil {
-				return &FieldParseError{Field: field.Name, Err: err}
-			}
-
-			v.SetUint(i)
-
-		case reflect.Slice:
-			elem := v.Type().Elem()
-			if elem.Kind() != reflect.String {
-				return &FieldTypeError{Field: field.Name, Type: field.Value.Type()}
-			}
-
-			set := reflect.ValueOf(val)
-			if elem != set.Type().Elem() {
-				// The inner string type has been aliased. We need to convert each element
-				set = reflect.MakeSlice(v.Type(), len(val), len(val))
-
-				for i := range val {
-					set.Index(i).SetString(val[i])
-				}
-
-			} else if set.Type() != v.Type() {
-				// The  []string type has been aliased. We need to convert the entire object
-				set = set.Convert(v.Type())
-			}
-
-			v.Set(set)
-
-		case reflect.String:
-			s, err := parseString(val)
-			if err != nil {
-				return &FieldParseError{Field: field.Name, Err: err}
-			}
-
-			v.SetString(s)
-
-		default:
-			return &FieldTypeError{Field: field.Name, Type: field.Value.Type()}
+		if prev := flatVals[key]; prev == nil {
+			// No subkeys yet
+			flatVals[key] = &formLayer{val: &formVal{key: k, vals: e}}
+		} else {
+			// There are multiple entries for the same key with different cases. Just sacrifice some
+			// of error messaging
+			prev.val.vals = append(prev.val.vals, e...)
 		}
 	} // for
+
+	if recurse == nil {
+		return flatVals
+	}
+
+	// Expand keys for subkey access.
+
+	recVals := make(map[string]*formLayer)
+
+	for key, layer := range flatVals {
+		keys := expandKey(key, recurse)
+
+		currMap := recVals
+		for i, subKey := range keys {
+			currEntry := currMap[subKey]
+
+			// Initialise the layer if we have to
+			if currEntry == nil {
+				currEntry = &formLayer{}
+				currMap[subKey] = currEntry
+			}
+
+			// Are we at the end? If so then set the vals
+			if i == len(keys)-1 {
+				// TODO: Return error on duplicate?
+				if currEntry.val == nil {
+					currEntry.val = layer.val
+				} else {
+					currEntry.val.vals = append(currEntry.val.vals, layer.val.vals...)
+				}
+			} else { // There are sub keys so add to the map
+				if currEntry.subVals == nil {
+					currEntry.subVals = make(map[string]*formLayer)
+				}
+
+				currMap = currEntry.subVals
+			}
+		}
+	}
+
+	return recVals
+}
+
+type formLayer struct {
+	val     *formVal
+	subVals map[string]*formLayer
+}
+
+type formVal struct {
+	vals []string
+	// preserved original key for errors.
+	key string
+}
+
+func setMap(vals map[string]*formLayer, entries map[string]*formEntry) error {
+	for k, layer := range vals {
+		entry, ok := entries[k]
+		if !ok {
+			// TODO: Error?
+			continue
+		}
+
+		if layer.val != nil {
+			// If nil we can now set the field.
+			if entry.field.Value.Kind() == reflect.Ptr && entry.field.Value.IsNil() && entry.field.Value.CanSet() {
+				if entry.field.Value.IsNil() && entry.field.Value.CanSet() {
+					entry.field.Value.Set(reflect.New(entry.field.Value.Type().Elem()))
+				} // if
+			} // if
+
+			if fieldParser, ok := getFieldParser(entry.field.Value); ok {
+				if err := fieldParser.ParseField(k, layer.val.vals); err != nil {
+					return &FieldParseError{Field: entry.field.Name, Err: err}
+				} // if
+
+				return nil
+			} // if
+
+			// We have a few kinds
+			v := baseElem(entry.field.Value)
+			kind := v.Kind()
+			if !v.CanSet() {
+				return nil
+			}
+
+			switch kind {
+			case reflect.Bool:
+				b, err := parseBool(layer.val.vals)
+				if err != nil {
+					return &FieldParseError{Field: entry.field.Name, Err: err}
+				}
+
+				v.SetBool(b)
+
+			case reflect.Int,
+				reflect.Int8,
+				reflect.Int16,
+				reflect.Int32,
+				reflect.Int64:
+				i, err := parseInt(layer.val.vals)
+				if err != nil {
+					return &FieldParseError{Field: entry.field.Name, Err: err}
+				}
+
+				v.SetInt(i)
+
+			case reflect.Uint,
+				reflect.Uint8,
+				reflect.Uint16,
+				reflect.Uint32,
+				reflect.Uint64:
+				i, err := parseUint(layer.val.vals)
+				if err != nil {
+					return &FieldParseError{Field: entry.field.Name, Err: err}
+				}
+
+				v.SetUint(i)
+
+			case reflect.Slice:
+				elem := v.Type().Elem()
+				if elem.Kind() != reflect.String {
+					return &FieldTypeError{Field: entry.field.Name, Type: entry.field.Value.Type()}
+				}
+
+				// Copy all of the elements into the new string type
+				// The inner string type has been aliased. We need to convert each element
+				set := reflect.MakeSlice(v.Type(), len(layer.val.vals), len(layer.val.vals))
+
+				for i := range layer.val.vals {
+					set.Index(i).SetString(layer.val.vals[i])
+				}
+
+				v.Set(set)
+
+			case reflect.String:
+				s, err := parseString(layer.val.vals)
+				if err != nil {
+					return &FieldParseError{Field: entry.field.Name, Err: err}
+				}
+
+				v.SetString(s)
+
+			default:
+				return &FieldTypeError{Field: entry.field.Name, Type: entry.field.Value.Type()}
+			}
+		}
+
+		if layer.subVals != nil && entry.subEntries != nil {
+			setMap(layer.subVals, entry.subEntries)
+		}
+	}
 
 	return nil
 }
@@ -224,19 +264,12 @@ func baseElem(v reflect.Value) reflect.Value {
 	}
 }
 
-func buildMap(v interface{}) (map[string]*Field, error) {
-	if entries, ok := v.(map[string]interface{}); ok {
-		e := make(map[string]*Field, len(entries))
-		for k, v := range entries {
-			e[k] = &Field{
-				Value: reflect.ValueOf(v),
-				Name:  k,
-			}
-		}
-		// TODO: Check that each entry can be set.
-		return e, nil
-	} // if
+type formEntry struct {
+	field      *Field
+	subEntries map[string]*formEntry
+}
 
+func buildMap(v interface{}, toLower, recurse bool) (map[string]*formEntry, error) {
 	// Must be a pointer
 	rv := reflect.ValueOf(v)
 	if rv.Kind() != reflect.Ptr || rv.IsNil() {
@@ -249,10 +282,18 @@ func buildMap(v interface{}) (map[string]*Field, error) {
 		return nil, &UsageTypeError{Type: reflect.TypeOf(v)}
 	} // if
 
-	eleType := ele.Type()
+	entries := make(map[string]*formEntry)
+	if err := addMapEntries(entries, ele, toLower, recurse); err != nil {
+		return nil, err
+	}
 
+	return entries, nil
+} // buildMap
+
+func addMapEntries(entries map[string]*formEntry, ele reflect.Value, toLower, recurse bool) error {
+	eleType := ele.Type()
 	nFields := ele.NumField()
-	entries := make(map[string]*Field, nFields)
+
 	for i := 0; i < nFields; i++ {
 		entry := ele.Field(i)
 		entryType := eleType.Field(i)
@@ -268,8 +309,13 @@ func buildMap(v interface{}) (map[string]*Field, error) {
 			name = tag
 		}
 
-		if _, ok := entries[name]; ok {
-			return nil, &DuplicateFieldError{Field: name}
+		keyName := name
+		if toLower {
+			keyName = strings.ToLower(name)
+		}
+
+		if _, ok := entries[keyName]; ok {
+			return &DuplicateFieldError{Field: name}
 		}
 
 		if !entry.CanSet() {
@@ -280,14 +326,26 @@ func buildMap(v interface{}) (map[string]*Field, error) {
 			continue
 		}
 
-		entries[name] = &Field{
-			Value: entry,
-			Name:  name,
+		fEntry := &formEntry{
+			field: &Field{
+				Value: entry,
+				Name:  name,
+			},
 		}
+
+		if recurse && entryType.Type.Kind() == reflect.Struct {
+			fEntry.subEntries = make(map[string]*formEntry)
+
+			if err := addMapEntries(entries, entry, toLower, recurse); err != nil {
+				return err
+			}
+		}
+
+		entries[keyName] = fEntry
 	} // for
 
-	return entries, nil
-} // buildMap
+	return nil
+}
 
 // Wrong type passed into Parse
 type UsageTypeError struct {

@@ -87,26 +87,6 @@ func TestParseStringSlice(t *testing.T) {
 
 }
 
-func stringSliceEqual(a, b []string) bool {
-	if a == nil && b == nil {
-		return true
-	} else if a == nil || b == nil {
-		return false
-	}
-
-	if len(a) != len(b) {
-		return false
-	} // if
-
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-
-	return true
-} // stringsEqual
-
 func TestParseInt(t *testing.T) {
 	type Alias string
 	testStruct := struct {
