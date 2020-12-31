@@ -187,3 +187,33 @@ func TestParseRecursive(t *testing.T) {
 		t.Errorf("Unexpected value in outer.Inner.Value. Expected %q, found %q", innerVal, outer.Inner.Value)
 	}
 }
+func TestParseAnonymous(t *testing.T) {
+	type InnerStruct struct {
+		InnerValue string
+	}
+
+	type OuterStruct struct {
+		InnerStruct
+		Value string
+	}
+
+	var outer OuterStruct
+
+	const outerVal = "outer"
+	const innerVal = "inner"
+	vals := url.Values{
+		"Value":      []string{outerVal},
+		"InnerValue": []string{innerVal},
+	}
+
+	if err := Parse(vals, &outer); err != nil {
+		t.Fatalf("Parse: %q", err)
+	}
+
+	if outer.Value != outerVal {
+		t.Errorf("Unexpected value in outer.Value. Expected %q, found %q", outerVal, outer.Value)
+	}
+	if outer.InnerValue != innerVal {
+		t.Errorf("Unexpected value in outer.InnerValue. Expected %q, found %q", innerVal, outer.InnerValue)
+	}
+}

@@ -299,7 +299,6 @@ func addMapEntries(entries map[string]*formEntry, ele reflect.Value, toLower, re
 		entryType := eleType.Field(i)
 
 		isUnexported := entryType.PkgPath != ""
-		// TODO: Handle anonymous structs.
 		if isUnexported {
 			continue
 		}
@@ -323,6 +322,15 @@ func addMapEntries(entries map[string]*formEntry, ele reflect.Value, toLower, re
 		}
 
 		if !entry.CanInterface() {
+			continue
+		}
+
+		// Add anonymous structs values at the same level as the current
+		if entryType.Type.Kind() == reflect.Struct && entryType.Anonymous {
+			if err := addMapEntries(entries, entry, toLower, recurse); err != nil {
+				return err
+			}
+
 			continue
 		}
 
