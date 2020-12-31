@@ -153,3 +153,37 @@ func TestParseInt(t *testing.T) {
 		}
 	}
 }
+
+func TestParseRecursive(t *testing.T) {
+	type InnerStruct struct {
+		Value string
+	}
+
+	type OuterStruct struct {
+		Value string
+		Inner InnerStruct
+	}
+
+	var outer OuterStruct
+
+	const outerVal = "outer"
+	const innerVal = "inner"
+	vals := url.Values{
+		"Value":        []string{outerVal},
+		"Inner[Value]": []string{innerVal},
+	}
+
+	p := &Parser{
+		Recurse: NestedMapRecurse,
+	}
+	if err := p.Parse(vals, &outer); err != nil {
+		t.Fatalf("Parse: %q", err)
+	}
+
+	if outer.Value != outerVal {
+		t.Errorf("Unexpected value in outer.Value. Expected %q, found %q", outerVal, outer.Value)
+	}
+	if outer.Inner.Value != innerVal {
+		t.Errorf("Unexpected value in outer.Inner.Value. Expected %q, found %q", innerVal, outer.Inner.Value)
+	}
+}

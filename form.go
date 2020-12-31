@@ -336,7 +336,7 @@ func addMapEntries(entries map[string]*formEntry, ele reflect.Value, toLower, re
 		if recurse && entryType.Type.Kind() == reflect.Struct {
 			fEntry.subEntries = make(map[string]*formEntry)
 
-			if err := addMapEntries(entries, entry, toLower, recurse); err != nil {
+			if err := addMapEntries(fEntry.subEntries, entry, toLower, recurse); err != nil {
 				return err
 			}
 		}
