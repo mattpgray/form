@@ -1,3 +1,3 @@
-module github.com/mattpgray/go-form
+module github.com/mattpgray/form
 
 go 1.14
