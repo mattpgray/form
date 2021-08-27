@@ -4,85 +4,122 @@ import (
 	"strings"
 )
 
-// RecursionFunc is used by the parser to unwrap the keys and values supplied by the form into
-// sub objects
-type RecursionFunc func(key string) (baseKey string, subKey string, ok bool)
+// DecodeSubKeyFunc is used by the Decoder to unwrap the keys and values supplied by the form into
+// sub objects. The slice retunred from these functions must contain at least one element. If the supplied
+// key is in the incorrect format then these functions return a slice with one element only containg the
+// incorrect key. These functions should not alter the case of the keys in order to achieve case insensitivity.
+// Instead, call (*Decoder).StrictCase(false).
+type DecodeSubKeyFunc func(key string) (keyParts []string)
 
-func expandKey(key string, recurse RecursionFunc) []string {
-	var keys []string
-	for {
-		if nextKey, subKey, ok := recurse(key); ok {
-			keys = append(keys, nextKey)
-			key = subKey
+// NestedMapDecodeFunc unwraps keys of the type key1[key2[key3]].
+func NestedMapDecodeFunc(key string) (keyParts []string) {
+	openIdxs := indexAll(key, "[")
+	if len(openIdxs) == 0 {
+		return singleKey(key)
+	}
+	// All the close brackets must be at the end
+	wantSuffix := strings.Repeat("]", len(openIdxs))
+	if !strings.HasSuffix(key, wantSuffix) {
+		return singleKey(key)
+	}
+	strippedKey := key[:len(key)-len(wantSuffix)]
+	if strings.Contains(strippedKey, "]") {
+		return singleKey(key)
+	}
+	// Now get the keys
+	keyParts = make([]string, 0, len(openIdxs)+1)
+	keyParts = append(keyParts, strippedKey[:openIdxs[0]])
+	for i := 0; i < len(openIdxs); i++ {
+		var keyPart string
+		if i == len(openIdxs)-1 {
+			keyPart = strippedKey[openIdxs[i]+1:]
 		} else {
-			keys = append(keys, key)
-			break
+			keyPart = strippedKey[openIdxs[i]+1 : openIdxs[i+1]]
+		}
+		keyParts = append(keyParts, keyPart)
+	}
+	return keyParts
+}
+
+// ListMapDecodeFunc unwraps forms of the type key1[key2][key3]
+func ListMapDecodeFunc(key string) (keyParts []string) {
+	openIdxs := indexAll(key, "[")
+	closeIdxs := indexAll(key, "]")
+	if len(openIdxs) == 0 || len(openIdxs) != len(closeIdxs) {
+		return singleKey(key)
+	}
+	for i := 0; i < len(openIdxs); i++ {
+		if openIdxs[i] > closeIdxs[i] {
+			return singleKey(key)
 		}
 	}
-
-	return keys
+	for i := 0; i < len(openIdxs)-1; i++ {
+		if openIdxs[i+1] < closeIdxs[i] {
+			return singleKey(key)
+		}
+	}
+	keyParts = make([]string, 0, len(openIdxs)+1)
+	keyParts = append(keyParts, key[:openIdxs[0]])
+	for i := 0; i < len(openIdxs); i++ {
+		keyParts = append(keyParts, key[openIdxs[i]+1:closeIdxs[i]])
+	}
+	return keyParts
 }
 
-// NestedMapRecurse unwraps keys of the type key1[key2[key3]].
-func NestedMapRecurse(key string) (baseKey string, subKey string, ok bool) {
-	if key == "" || key[len(key)-1] != ']' {
-		return "", "", false
-	}
-
-	idx := strings.Index(key, "[")
-	if idx == -1 {
-		return "", "", false
-	}
-
-	baseKey = key[:idx]
-	subKey = key[idx+1 : len(key)-1]
-	ok = true
-
-	return baseKey, subKey, ok
+// ListDecodeFunc unwraps forms of the type key1.key2.key3
+func ListDecodeFunc(key string) (keyParts []string) {
+	return strings.Split(key, ".")
 }
 
-// ListMapRecurse unwraps forms of the type key1[key2][key3]
-func ListMapRecurse(key string) (baseKey string, subKey string, ok bool) {
-	if key == "" {
-		return "", "", false
-	}
+// EncodeSubKeyFunc is used by the Encoder to join sub keys together into one key.
+// The slice passed into the encode function always has at least one element.
+type EncodeSubKeyFunc func(keyParts []string) string
 
-	openIdx := strings.Index(key, "[")
-	if openIdx == -1 {
-		return "", "", false
+// NestedMapEncodeFunc makes keys of the type key1[key2[key3]].
+func NestedMapEncodeFunc(keyParts []string) string {
+	sb := &strings.Builder{}
+	sb.WriteString(keyParts[0])
+	for i := 1; i < len(keyParts); i++ {
+		sb.WriteString("[")
+		sb.WriteString(keyParts[i])
 	}
-	closeIdx := strings.Index(key, "]")
-	if closeIdx == -1 || openIdx > closeIdx {
-		return "", "", false
+	for i := 1; i < len(keyParts); i++ {
+		sb.WriteString("]")
 	}
-
-	baseKey = key[:openIdx]
-	subKey = key[openIdx+1:closeIdx] + key[closeIdx+1:]
-	ok = true
-
-	return baseKey, subKey, ok
+	return sb.String()
 }
 
-// ListRecurse unwraps forms of the type key1.key2.key3
-func ListRecurse(key string) (baseKey string, subKey string, ok bool) {
-	if key == "" {
-		return "", "", false
+// ListMapEncodeFunc makes keys of the type key1[key2][key3].
+func ListMapEncodeFunc(keyParts []string) string {
+	sb := &strings.Builder{}
+	sb.WriteString(keyParts[0])
+	for i := 1; i < len(keyParts); i++ {
+		sb.WriteString("[")
+		sb.WriteString(keyParts[i])
+		sb.WriteString("]")
 	}
-
-	baseKey, subKey = firstSplit(key, ".")
-	if baseKey == "" || baseKey == key {
-		return "", "", false
-	}
-	ok = true
-
-	return baseKey, subKey, ok
+	return sb.String()
 }
 
-func firstSplit(s, split string) (first, second string) {
-	idx := strings.Index(s, split)
-	if idx == -1 {
-		return s, ""
-	}
+// ListEncodeFunc makes keys of the type key1.key2.key3.
+func ListEncodeFunc(keyParts []string) string {
+	return strings.Join(keyParts, ".")
+}
 
-	return s[:idx], s[idx+1:]
+// indexAll finds the indexes of all non-overlapping instances of the subtring
+func indexAll(s string, substr string) []int {
+	var idxs []int
+	start := 0
+	for {
+		if idx := strings.Index(s[start:], substr); idx < 0 {
+			return idxs
+		} else {
+			idxs = append(idxs, idx+start)
+			start += idx + len(substr)
+		}
+	}
+}
+
+func singleKey(key string) []string {
+	return []string{key}
 }

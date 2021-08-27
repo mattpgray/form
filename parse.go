@@ -13,36 +13,41 @@ type FieldParser interface {
 	ParseField(key string, vals []string) error
 }
 
-var defaultParser = &Parser{}
-
-// Parse calls Parser{}.Parse()
-func Parse(vals url.Values, v interface{}) error {
-	return defaultParser.Parse(vals, v)
-}
-
+// Parse calls Parser{}.Parse(
 // Parser performs the parsing of the form values. It is used to specify options that
 // alter the method of parsing
-type Parser struct {
-	CaseInsensitive bool
-	AllowExtra      bool
+type Decoder struct {
+	strictCase bool
 	// Recurse allows sub structs to be populated. Leave nil if you do not want sub keys to be parsed.
 	// If Recurse is nil and a sub struct/map is found then it is ignored.
-	Recurse RecursionFunc
+	recurse DecodeSubKeyFunc
+}
+
+func NewDecoder() *Decoder {
+	return &Decoder{strictCase: true}
+}
+
+func (d *Decoder) StrictCase(b bool) {
+	d.strictCase = b
+}
+
+func (d *Decoder) Recurse(f DecodeSubKeyFunc) {
+	d.recurse = f
 }
 
 // Parse parses the form values into the supplied variable based on the parsers options.
 // The supplied value must be either a non-nil pointer to a struct or a map.
-func (p *Parser) Parse(urlVals url.Values, v interface{}) error {
-	entries, err := buildMap(v, p.CaseInsensitive, p.Recurse != nil)
+func (p *Decoder) Decode(src map[string][]string, dst interface{}) error {
+	entries, err := buildMap(src, !p.strictCase, p.recurse != nil)
 	if err != nil {
 		return err
 	}
 
-	vals := buildVals(urlVals, p.CaseInsensitive, p.Recurse)
+	vals := buildVals(src, !p.strictCase, p.recurse)
 	return setMap(vals, entries)
 }
 
-func buildVals(vals url.Values, toLower bool, recurse RecursionFunc) map[string]*formLayer {
+func buildVals(vals url.Values, toLower bool, recurse DecodeSubKeyFunc) map[string]*formLayer {
 	flatVals := make(map[string]*formLayer)
 	for k, e := range vals {
 		key := k
@@ -69,7 +74,10 @@ func buildVals(vals url.Values, toLower bool, recurse RecursionFunc) map[string]
 	recVals := make(map[string]*formLayer)
 
 	for key, layer := range flatVals {
-		keys := expandKey(key, recurse)
+		keys := recurse(key)
+		if len(keys) == 0 {
+			panic("invalid number of keys from recurse function")
+		}
 
 		currMap := recVals
 		for i, subKey := range keys {
@@ -362,7 +370,7 @@ type UsageTypeError struct {
 
 func (e *UsageTypeError) Error() string {
 	if e.Type == nil {
-		buildErrorMessage("Parse", "nil")
+		return buildErrorMessage("Parse", "nil")
 	}
 
 	if e.Type.Kind() != reflect.Ptr {

@@ -29,7 +29,7 @@ type Encoder struct {
 	AllowExtra      bool
 	// Recurse allows sub structs to be populated. Leave nil if you do not want sub keys to be parsed.
 	// If Recurse is nil and a sub struct/map is found then it is ignored.
-	Recurse RecursionFunc
+	Recurse EncodeSubKeyFunc
 }
 
 // Parse parses the form values into the supplied variable based on the parsers options.
@@ -136,8 +136,7 @@ func addURLVals(vals url.Values, ele reflect.Value, prevKeys []string, recurse f
 				// Copy all of the elements into the new string type
 				// The inner string type has been aliased. We need to convert each element
 				nEntries := entry.Len()
-				set := make([]string, nEntries, nEntries)
-
+				set := make([]string, nEntries)
 				for i := 0; i < nEntries; i++ {
 					set[i] = entry.Index(i).String()
 				}

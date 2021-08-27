@@ -18,8 +18,8 @@ func TestParseString(t *testing.T) {
 		"A": []string{"A value"},
 		"B": []string{"B value"},
 	}
-	if err := Parse(vals, &testStruct); err != nil {
-		t.Fatalf("Parse: %q", err)
+	if err := NewDecoder().Decode(vals, &testStruct); err != nil {
+		t.Fatalf("NewDecoder().Decode: %q", err)
 	} // if
 
 	if testStruct.A != "A value" {
@@ -35,8 +35,8 @@ func TestParseString(t *testing.T) {
 
 	var fieldParseErr *FieldParseError
 	var unexpectedValuesError *UnexpectedValuesError
-	if err := Parse(vals, &testStruct); !errors.As(err, &fieldParseErr) || !errors.As(err, &unexpectedValuesError) {
-		t.Fatalf("Parse not nil: %q", err)
+	if err := NewDecoder().Decode(vals, &testStruct); !errors.As(err, &fieldParseErr) || !errors.As(err, &unexpectedValuesError) {
+		t.Fatalf("NewDecoder().Decode not nil: %q", err)
 	} else {
 		if fieldParseErr.Field != "A" {
 			t.Errorf("Unexpected field in error. Expected \"A\" found %q", fieldParseErr.Field)
@@ -62,8 +62,8 @@ func TestParseStringSlice(t *testing.T) {
 		"B": bs,
 		"C": cs,
 	}
-	if err := Parse(vals, &testStruct); err != nil {
-		t.Fatalf("Parse: %q", err)
+	if err := NewDecoder().Decode(vals, &testStruct); err != nil {
+		t.Fatalf("NewDecoder().Decode: %q", err)
 	} // if
 
 	if !reflect.DeepEqual(testStruct.A, as) {
@@ -84,11 +84,9 @@ func TestParseStringSlice(t *testing.T) {
 	if !reflect.DeepEqual(cRes, cs) {
 		t.Errorf("Unexpected value in B. Expected %v found %v", cs, testStruct.C)
 	}
-
 }
 
 func TestParseInt(t *testing.T) {
-	type Alias string
 	testStruct := struct {
 		Int   int
 		Int8  int8
@@ -104,8 +102,8 @@ func TestParseInt(t *testing.T) {
 		"Int32": []string{"4"},
 		"Int64": []string{"5"},
 	}
-	if err := Parse(vals, &testStruct); err != nil {
-		t.Fatalf("Parse: %q", err)
+	if err := NewDecoder().Decode(vals, &testStruct); err != nil {
+		t.Fatalf("NewDecoder().Decode: %q", err)
 	}
 
 	const (
@@ -141,8 +139,8 @@ func TestParseInt(t *testing.T) {
 	}
 	var fieldParseErr *FieldParseError
 	var unexpectedValueError *UnexpectedValueError
-	if err := Parse(vals, &testStruct); !errors.As(err, &fieldParseErr) || !errors.As(err, &unexpectedValueError) {
-		t.Fatalf("Parse not nil: %q", err)
+	if err := NewDecoder().Decode(vals, &testStruct); !errors.As(err, &fieldParseErr) || !errors.As(err, &unexpectedValueError) {
+		t.Fatalf("NewDecoder().Decode not nil: %q", err)
 	} else {
 		if fieldParseErr.Field != "Int" {
 			t.Errorf("Unexpected field in fieldParseErr. Expected \"Int\" found %q", fieldParseErr.Field)
@@ -173,11 +171,10 @@ func TestParseRecursive(t *testing.T) {
 		"Inner[Value]": []string{innerVal},
 	}
 
-	p := &Parser{
-		Recurse: NestedMapRecurse,
-	}
-	if err := p.Parse(vals, &outer); err != nil {
-		t.Fatalf("Parse: %q", err)
+	d := NewDecoder()
+	d.Recurse(NestedMapDecodeFunc)
+	if err := d.Decode(vals, &outer); err != nil {
+		t.Fatalf("NewDecoder().Decode: %q", err)
 	}
 
 	if outer.Value != outerVal {
@@ -187,6 +184,7 @@ func TestParseRecursive(t *testing.T) {
 		t.Errorf("Unexpected value in outer.Inner.Value. Expected %q, found %q", innerVal, outer.Inner.Value)
 	}
 }
+
 func TestParseAnonymous(t *testing.T) {
 	type InnerStruct struct {
 		InnerValue string
@@ -206,8 +204,8 @@ func TestParseAnonymous(t *testing.T) {
 		"InnerValue": []string{innerVal},
 	}
 
-	if err := Parse(vals, &outer); err != nil {
-		t.Fatalf("Parse: %q", err)
+	if err := NewDecoder().Decode(vals, &outer); err != nil {
+		t.Fatalf("NewDecoder().Decode: %q", err)
 	}
 
 	if outer.Value != outerVal {
